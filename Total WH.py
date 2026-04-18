@@ -4,7 +4,34 @@ import os
 from io import BytesIO
 
 # --- 1. 语言配置字典 ---
+# 顺序已调整：PT (葡语) 设为默认索引 0
 LANG_DICT = {
+    "PT": {
+        "title": "Painel de Monitoramento MDC",
+        "total_usage": "Taxa de Ocupação Total",
+        "used": "Usado",
+        "total_avail": "Capacidade Total",
+        "ctrl_panel": "⚙️ Painel de Controlo",
+        "lang_sel": "Escolher Língua / 语言选择",
+        "wh_sel": "Selecionar Armazém",
+        "stats_title": "Estatísticas em Tempo Real",
+        "bin_total": "Total de Locais Disponíveis",
+        "bin_used": "Locais Ocupados",
+        "bin_free": "Locais Livres",
+        "export_title": "📥 Exportação de Relatórios",
+        "export_btn": "Exportar Locais Vazios - {}",
+        "no_empty": "Não há locais vazios no momento",
+        "legend_empty": "Local Disponível",
+        "legend_used": "Local Ocupado",
+        "legend_disabled": "Local Indisponível",
+        "legend_beam": "Viga Laranja",
+        "legend_pillar": "Pilar Azul",
+        "aisle": "Corredor",
+        "data_error": "Erro ao carregar dados. Verifique o arquivo SGF.csv.",
+        "error_check": "⚠️ Verificação de Erros de Dados",
+        "error_btn": "Exportar Locais Inválidos com Carga (Excel)",
+        "error_msg": "Encontrados {} locais desativados com carga"
+    },
     "CN": {
         "title": "MDC 仓库实时监控看板",
         "total_usage": "全库容积利用率",
@@ -26,30 +53,10 @@ LANG_DICT = {
         "legend_beam": "橙色横梁",
         "legend_pillar": "蓝色立柱",
         "aisle": "货道",
-        "data_error": "无法加载数据，请确保 SGF.csv 文件正确。"
-    },
-    "PT": {
-        "title": "Painel de Monitoramento MDC",
-        "total_usage": "Taxa de Ocupação Total",
-        "used": "Usado",
-        "total_avail": "Capacidade Total",
-        "ctrl_panel": "⚙️ Painel de Controlo",
-        "lang_sel": "Escolher Língua",
-        "wh_sel": "Selecionar Armazém",
-        "stats_title": "Estatísticas em Tempo Real",
-        "bin_total": "Total de Locais Disponíveis",
-        "bin_used": "Locais Ocupados",
-        "bin_free": "Locais Livres",
-        "export_title": "📥 Exportação de Relatórios",
-        "export_btn": "Exportar Locais Vazios - {}",
-        "no_empty": "Não há locais vazios no momento",
-        "legend_empty": "Local Disponível",
-        "legend_used": "Local Ocupado",
-        "legend_disabled": "Local Indisponível",
-        "legend_beam": "Viga Laranja",
-        "legend_pillar": "Pilar Azul",
-        "aisle": "Corredor",
-        "data_error": "Erro ao carregar dados. Verifique o arquivo SGF.csv."
+        "data_error": "无法加载数据，请确保 SGF.csv 文件正确。",
+        "error_check": "⚠️ 系统数据异常核查",
+        "error_btn": "导出禁用库位有货清单 (Excel)",
+        "error_msg": "发现 {} 个库位状态禁用但仍有货物"
     }
 }
 
@@ -140,12 +147,16 @@ l_map, wh_stats = load_data()
 
 # --- 4. 界面渲染 ---
 if l_map:
-    # 侧边栏控制
-    st.sidebar.header(LANG_DICT["CN"]["ctrl_panel"] if "lang" not in st.session_state else LANG_DICT[st.session_state.lang]["ctrl_panel"])
-    lang_choice = st.sidebar.radio("Language / 语言", ["中文", "Português"])
-    L = LANG_DICT["CN"] if lang_choice == "中文" else LANG_DICT["PT"]
-    st.session_state.lang = "CN" if lang_choice == "中文" else "PT"
+    # 侧边栏控制 - 默认葡语
+    if "lang" not in st.session_state:
+        st.session_state.lang = "PT"
+    
+    # 切换选项顺序：葡语在前
+    lang_choice = st.sidebar.radio("Escolher Língua / 语言", ["Português", "中文"])
+    st.session_state.lang = "PT" if lang_choice == "Português" else "CN"
+    L = LANG_DICT[st.session_state.lang]
 
+    st.sidebar.header(L["ctrl_panel"])
     st.markdown(f'<h2 style="text-align:center; color:#1e3c72;">{L["title"]}</h2>', unsafe_allow_html=True)
     
     # 顶部汇总
@@ -162,8 +173,38 @@ if l_map:
     st.sidebar.markdown(f"{L['bin_used']}: **{curr['used_bins']}**")
     st.sidebar.markdown(f"{L['bin_free']}: **{curr['total_bins'] - curr['used_bins']}**")
     
-    # 导出
+    # --- 异常库位核查逻辑 ---
     st.sidebar.divider()
+    st.sidebar.subheader(L["error_check"])
+    
+    error_list = []
+    for loc, info in l_map.items():
+        if info['Status'] == "不可用" and len(info['Items']) > 0:
+            error_list.append({
+                "Location": loc,
+                "Status": info['Status'],
+                "Items_Stocked": " | ".join(info['Items'])
+            })
+    
+    if error_list:
+        st.sidebar.warning(L["error_msg"].format(len(error_list)))
+        error_df = pd.DataFrame(error_list)
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            error_df.to_excel(writer, index=False, sheet_name='System_Errors')
+        
+        st.sidebar.download_button(
+            label=L["error_btn"],
+            data=output.getvalue(),
+            file_name="MDC_System_Error_Bins.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.sidebar.success("OK: No Status Conflicts")
+
+    # 导出空库位
+    st.sidebar.divider()
+    st.sidebar.subheader(L["export_title"])
     empty_locs = [k for k, v in l_map.items() if v['WH'] == wh_sel and v['Status'] == "可用" and len(v['Items']) == 0]
     if empty_locs:
         csv = pd.DataFrame(empty_locs, columns=['Loc_ID']).to_csv(index=False).encode('utf-8-sig')
