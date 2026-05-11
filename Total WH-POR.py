@@ -4,7 +4,6 @@ import os
 from io import BytesIO
 
 # --- 1. 语言配置字典 ---
-# 顺序已调整：PT (葡语) 设为默认索引 0
 LANG_DICT = {
     "PT": {
         "title": "Painel de Monitoramento MDC",
@@ -89,13 +88,16 @@ st.markdown("""
         border-radius: 10px; border: 1px solid #eee; margin-bottom: 30px;
     }
     .bay-unit { display: flex; flex-direction: row; align-items: flex-start; }
-    .bin-column { display: flex; flex-direction: column; align-items: center; width: 42px; flex-shrink: 0; }
+    
+    /* 改动说明2：微调宽度，从42px降至38px以适配6库显示 */
+    .bin-column { display: flex; flex-direction: column; align-items: center; width: 38px; flex-shrink: 0; }
     .bin-box {
-        width: 36px; height: 30px; margin: 0px 0;
+        width: 32px; height: 30px; margin: 0px 0;
         display: flex; align-items: center; justify-content: center;
         border-radius: 2px; font-size: 10px; font-weight: bold;
         border: 1px solid #eee; z-index: 2; background-color: white;
     }
+    
     .orange-beam-row { width: 100%; height: 4px; background-color: #ff9800; margin: 2px 0; z-index: 5; }
     .pillar-tech-blue {
         width: 0; height: 210px; border-left: 4px dotted #3498db; 
@@ -126,9 +128,14 @@ def load_data():
         df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0)
         for c in ['L','W','H']: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
         df['Vol'] = (df['L'] * df['W'] * df['H']) / 1000000
-        m_mask = (~df['Loc'].str.contains('-', na=False)) & (df['Loc'].str.startswith(('A','B','C','D','E'))) & (df['L']>0)
+        
+        # 改动说明1：在筛选条件中增加 'G'
+        m_mask = (~df['Loc'].str.contains('-', na=False)) & (df['Loc'].str.startswith(('A','B','C','D','E','G'))) & (df['L']>0)
         master = df[m_mask].drop_duplicates('Loc')
-        l_map, stats = {}, {wh: {'t_v':0.0, 'u_v':0.0, 'total_bins':0, 'used_bins':0} for wh in 'ABCDE'}
+        
+        # 改动说明1：统计字典加入 'G'
+        l_map, stats = {}, {wh: {'t_v':0.0, 'u_v':0.0, 'total_bins':0, 'used_bins':0} for wh in 'ABCDEG'}
+        
         for _, r in master.iterrows():
             wh = r['Loc'][0].upper()
             l_map[r['Loc']] = {'Items':[], 'Status':r['Status'], 'Vol':r['Vol'], 'WH':wh, 'Aisle':r['Loc'][0:3], 'Col':r['Loc'][3:5], 'Lvl':r['Loc'][5:7]}
@@ -147,11 +154,9 @@ l_map, wh_stats = load_data()
 
 # --- 4. 界面渲染 ---
 if l_map:
-    # 侧边栏控制 - 默认葡语
     if "lang" not in st.session_state:
         st.session_state.lang = "PT"
     
-    # 切换选项顺序：葡语在前
     lang_choice = st.sidebar.radio("Escolher Língua / 语言", ["Português", "中文"])
     st.session_state.lang = "PT" if lang_choice == "Português" else "CN"
     L = LANG_DICT[st.session_state.lang]
@@ -159,13 +164,12 @@ if l_map:
     st.sidebar.header(L["ctrl_panel"])
     st.markdown(f'<h2 style="text-align:center; color:#1e3c72;">{L["title"]}</h2>', unsafe_allow_html=True)
     
-    # 顶部汇总
     t_all, u_all = sum(s['t_v'] for s in wh_stats.values()), sum(s['u_v'] for s in wh_stats.values())
     r_all = (u_all/t_all*100) if t_all>0 else 0
     st.markdown(f'<div class="total-card">{L["total_usage"]}: <b>{r_all:.1f}%</b> &nbsp;&nbsp; | &nbsp;&nbsp; {L["used"]}: {u_all:.1f} m³ / {L["total_avail"]}: {t_all:.1f} m³</div>', unsafe_allow_html=True)
 
-    # 侧边栏库房选择
-    wh_sel = st.sidebar.selectbox(L["wh_sel"], ['A','B','C','D','E'])
+    # 改动说明1：下拉菜单加入 'G'
+    wh_sel = st.sidebar.selectbox(L["wh_sel"], ['A','B','C','D','E','G'])
     curr = wh_stats[wh_sel]
     st.sidebar.divider()
     st.sidebar.subheader(f"📊 {wh_sel} {L['stats_title']}")
@@ -173,36 +177,25 @@ if l_map:
     st.sidebar.markdown(f"{L['bin_used']}: **{curr['used_bins']}**")
     st.sidebar.markdown(f"{L['bin_free']}: **{curr['total_bins'] - curr['used_bins']}**")
     
-    # --- 异常库位核查逻辑 ---
+    # 异常核查
     st.sidebar.divider()
     st.sidebar.subheader(L["error_check"])
-    
     error_list = []
     for loc, info in l_map.items():
         if info['Status'] == "不可用" and len(info['Items']) > 0:
             error_list.append({
-                "Location": loc,
-                "Status": info['Status'],
-                "Items_Stocked": " | ".join(info['Items'])
+                "Location": loc, "Status": info['Status'], "Items_Stocked": " | ".join(info['Items'])
             })
-    
     if error_list:
         st.sidebar.warning(L["error_msg"].format(len(error_list)))
         error_df = pd.DataFrame(error_list)
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             error_df.to_excel(writer, index=False, sheet_name='System_Errors')
-        
-        st.sidebar.download_button(
-            label=L["error_btn"],
-            data=output.getvalue(),
-            file_name="MDC_System_Error_Bins.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.sidebar.success("OK: No Status Conflicts")
+        st.sidebar.download_button(label=L["error_btn"], data=output.getvalue(), file_name="MDC_System_Error_Bins.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else: st.sidebar.success("OK: No Status Conflicts")
 
-    # 导出空库位
+    # 导出
     st.sidebar.divider()
     st.sidebar.subheader(L["export_title"])
     empty_locs = [k for k, v in l_map.items() if v['WH'] == wh_sel and v['Status'] == "可用" and len(v['Items']) == 0]
@@ -211,9 +204,10 @@ if l_map:
         st.sidebar.download_button(L["export_btn"].format(wh_sel), csv, f"MDC_{wh_sel}.csv", "text/csv")
     else: st.sidebar.warning(L["no_empty"])
 
-    # 库房卡片
-    cols_stats = st.columns(5)
-    for i, wh_key in enumerate(['A', 'B', 'C', 'D', 'E']):
+    # 改动说明2：从 columns(5) 改为 columns(6) 适配 A-G 库卡片
+    cols_stats = st.columns(6)
+    wh_keys = ['A', 'B', 'C', 'D', 'E', 'G']
+    for i, wh_key in enumerate(wh_keys):
         s, r = wh_stats[wh_key], (wh_stats[wh_key]['u_v']/wh_stats[wh_key]['t_v']*100 if wh_stats[wh_key]['t_v']>0 else 0)
         with cols_stats[i]:
             st.markdown(f'<div class="wh-stat-card"><div class="wh-stat-title">{wh_key}</div><div class="wh-stat-val">{r:.1f}%</div><div style="font-size:11px; color:#888;">{s["u_v"]:.1f}/{s["t_v"]:.1f} m³</div></div>', unsafe_allow_html=True)
@@ -229,10 +223,12 @@ if l_map:
         </div>
     """, unsafe_allow_html=True)
 
-    # 渲染
+    # 渲染逻辑
+    # 改动说明1：G库与B/C/D/E逻辑一致（5层，2个位置一隔断）
     levels = ["50","40","30","20","10","00"] if wh_sel=='A' else ["40","30","20","10","00"]
     split = 3 if wh_sel=='A' else 2
     aisles = sorted(list(set(v['Aisle'] for v in l_map.values() if v['WH']==wh_sel)))
+    
     for a_id in aisles:
         st.markdown(f'<div class="aisle-title">📍 {L["aisle"]}: {a_id}</div>', unsafe_allow_html=True)
         all_cols = sorted(list(set(v['Col'] for v in l_map.values() if v['Aisle']==a_id)), reverse=True)
